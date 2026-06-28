@@ -148,6 +148,39 @@ void test_pulse_continuous_across_wrap() {
   TEST_ASSERT_FLOAT_WITHIN(0.01f, before, after);
 }
 
+// ---- Sweep: traveling wave across the field ---------------------------------
+
+void test_sweep_bounds() {
+  for (int64_t us = 0; us < 8'000'000; us += 37'000)
+    for (float x = 0; x <= 5.0f; x += 0.5f) {
+      float v = pmath::sweepIntensity(us, x, 4.0f, 3.0f);
+      TEST_ASSERT_TRUE(v >= -1e-4f && v <= 1.0f + 1e-4f);
+    }
+}
+
+void test_sweep_travels_with_position() {
+  // A node at position x sees the same waveform as x=0, delayed by
+  // period * x / wavelength. Here: period=4s, wavelength=3 -> delay for x=1.5
+  // is 4 * 1.5/3 = 2.0s.
+  const float period = 4.0f, wl = 3.0f, x = 1.5f;
+  int64_t delay_us = (int64_t)(period * x / wl * 1e6);  // 2.0s
+  for (int64_t t = 0; t < 4'000'000; t += 250'000) {
+    float at_origin = pmath::sweepIntensity(t, 0.0f, period, wl);
+    float at_x = pmath::sweepIntensity(t + delay_us, x, period, wl);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3, at_origin, at_x);
+  }
+}
+
+void test_sweep_nodes_differ_in_phase() {
+  // At a single instant, two nodes a half-wavelength apart are in opposition.
+  // At t=2s (period 4s) node 0 is at its peak (1.0); the node 1.5 units away
+  // (wavelength 3) is at its trough (0.0).
+  int64_t t = 2'000'000;
+  float a = pmath::sweepIntensity(t, 0.0f, 4.0f, 3.0f);
+  float b = pmath::sweepIntensity(t, 1.5f, 4.0f, 3.0f);  // half a wavelength away
+  TEST_ASSERT_TRUE(fabsf(a - b) > 0.9f);
+}
+
 // ---- Heartbeat: synced square wave ------------------------------------------
 
 void test_heartbeat_square_wave() {
@@ -198,6 +231,9 @@ int main(int, char**) {
   RUN_TEST(test_phase_handles_large_time_no_overflow);
   RUN_TEST(test_pulse_intensity_bounds_and_endpoints);
   RUN_TEST(test_pulse_continuous_across_wrap);
+  RUN_TEST(test_sweep_bounds);
+  RUN_TEST(test_sweep_travels_with_position);
+  RUN_TEST(test_sweep_nodes_differ_in_phase);
   RUN_TEST(test_heartbeat_square_wave);
   RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
   RUN_TEST(test_heartbeat_handles_negative_synced_time);

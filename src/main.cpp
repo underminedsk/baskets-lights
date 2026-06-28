@@ -12,6 +12,7 @@
 
 #include <Arduino.h>
 #include <NeoPixelBus.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -19,6 +20,7 @@
 
 #include "config.h"
 #include "beacon.h"
+#include "identity.h"
 #include "patterns.h"
 #include "sync.h"
 
@@ -27,9 +29,25 @@ NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method> strip(LED_COUNT, LED_PIN);
 
 static const uint8_t BROADCAST_ADDR[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// ---- Node identity (Milestone 2 reads real (x,y) from NVS) -------------------
-static float g_x = 0.0f;
-static float g_y = 0.0f;
+// ---- Node identity (stored in NVS; set once over serial) ---------------------
+static Preferences  g_prefs;
+static NodeIdentity g_id = {0, 0.0f, 0.0f};
+
+static void identityLoad() {
+  g_prefs.begin("node", /*readonly*/ true);
+  g_id.id = g_prefs.getUShort("id", 0);
+  g_id.x = g_prefs.getFloat("x", 0.0f);
+  g_id.y = g_prefs.getFloat("y", 0.0f);
+  g_prefs.end();
+}
+
+static void identitySave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putUShort("id", g_id.id);
+  g_prefs.putFloat("x", g_id.x);
+  g_prefs.putFloat("y", g_id.y);
+  g_prefs.end();
+}
 
 // ---- Sync state --------------------------------------------------------------
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
@@ -128,6 +146,72 @@ static void printDiag() {
 #endif
 }
 
+// ---- Serial command interface ------------------------------------------------
+// Flash identical firmware to every board, then provision each over serial:
+//   info                 print role + identity (+ pattern state on conductor)
+//   id <n>               set this node's id and save to NVS
+//   pos <x> <y>          set this node's (x,y) coordinate and save to NVS
+// Conductor-only (change what all nodes render, broadcast live):
+//   pattern <n>          0=pulse 2=sweep
+//   bri <n>              brightness 0-255
+//   param <i> <v>        set params[i] (i=0..3) — e.g. sweep period_ms / wavelength*100
+static void printInfo() {
+  Serial.printf("role=%s  id=%u  x=%.2f  y=%.2f\n",
+                IS_CONDUCTOR ? "CONDUCTOR" : "PERFORMER", g_id.id, g_id.x, g_id.y);
+#if IS_CONDUCTOR
+  Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
+                g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
+                g_beacon.params[2], g_beacon.params[3]);
+#endif
+}
+
+static void handleCommand(char* line) {
+  char* cmd = strtok(line, " \t");
+  if (!cmd) return;
+
+  if (!strcmp(cmd, "info")) {
+    printInfo();
+  } else if (!strcmp(cmd, "id")) {
+    char* a = strtok(nullptr, " \t");
+    if (a) { g_id.id = (uint16_t)atoi(a); identitySave(); printInfo(); }
+  } else if (!strcmp(cmd, "pos")) {
+    char* ax = strtok(nullptr, " \t");
+    char* ay = strtok(nullptr, " \t");
+    if (ax && ay) { g_id.x = atof(ax); g_id.y = atof(ay); identitySave(); printInfo(); }
+#if IS_CONDUCTOR
+  } else if (!strcmp(cmd, "pattern")) {
+    char* a = strtok(nullptr, " \t");
+    if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); printInfo(); }
+  } else if (!strcmp(cmd, "bri")) {
+    char* a = strtok(nullptr, " \t");
+    if (a) { g_beacon.brightness = (uint8_t)atoi(a); printInfo(); }
+  } else if (!strcmp(cmd, "param")) {
+    char* ai = strtok(nullptr, " \t");
+    char* av = strtok(nullptr, " \t");
+    if (ai && av) {
+      int i = atoi(ai);
+      if (i >= 0 && i < 4) { g_beacon.params[i] = (uint16_t)atoi(av); printInfo(); }
+    }
+#endif
+  } else {
+    Serial.printf("? unknown command: %s\n", cmd);
+  }
+}
+
+// Accumulate a newline-terminated command from serial without blocking.
+static void pollSerialCommands() {
+  static char buf[64];
+  static uint8_t len = 0;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (len) { buf[len] = '\0'; handleCommand(buf); len = 0; }
+    } else if (len < sizeof(buf) - 1) {
+      buf[len++] = c;
+    }
+  }
+}
+
 // ---- Arduino entry points ----------------------------------------------------
 void setup() {
   setCpuFrequencyMhz(CPU_FREQ_MHZ);
@@ -135,6 +219,17 @@ void setup() {
   delay(200);
   Serial.printf("\nDo Baskets Dream — role: %s  channel: %u\n",
                 IS_CONDUCTOR ? "CONDUCTOR" : "PERFORMER", WIFI_CHANNEL);
+
+#if IS_CONDUCTOR
+  // Milestone 2: drive the position-aware sweep by default so the pulse visibly
+  // travels across the field. Switch live with the serial 'pattern' command.
+  g_beacon.pattern_id = patterns::SWEEP;
+#endif
+
+  identityLoad();
+  if (!identityProvisioned(g_id))
+    Serial.println("  (unprovisioned — set 'id <n>' and 'pos <x> <y>' over serial)");
+  printInfo();
 
   syncInit(g_sync);
 
@@ -150,6 +245,8 @@ void setup() {
 
 void loop() {
   int64_t t = now_us();
+
+  pollSerialCommands();
 
 #if IS_CONDUCTOR
   static int64_t next_beacon = 0;
@@ -172,7 +269,7 @@ void loop() {
 #else
   int64_t render_us = syncedTime(s, t);
 #endif
-  patterns::render(strip, b, render_us, g_x, g_y);
+  patterns::render(strip, b, render_us, g_id.x, g_id.y);
   strip.Show();
 
 #if HEARTBEAT_LED

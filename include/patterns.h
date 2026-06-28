@@ -12,31 +12,45 @@
 namespace patterns {
 
 enum PatternId : uint16_t {
-  PULSE = 0,         // slow global brightness pulse
-  PALETTE_DRIFT = 1  // hue drift across a palette (later)
+  PULSE = 0,         // uniform slow breathing pulse (all nodes in unison)
+  PALETTE_DRIFT = 1, // hue drift across a palette (later)
+  SWEEP = 2          // brightness wave that travels across the field by position
 };
 
-// Slow breathing pulse in the white channel — calm and power-efficient by design.
-inline RgbwColor pulse(int64_t synced_us, uint8_t brightness, float x, float y) {
-  const float period_s = 4.0f;
-  const float spatial = (x + y) * 0.05f;  // 0 for Milestone 1
-  float s = pmath::pulseIntensity(synced_us, period_s, spatial);
-  uint8_t w = (uint8_t)lroundf(s * brightness);
-  return RgbwColor(0, 0, 0, w);
+// Uniform breathing pulse in the white channel — every node in unison.
+inline RgbwColor pulse(int64_t synced_us, uint8_t brightness) {
+  float s = pmath::pulseIntensity(synced_us, /*period_s*/ 4.0f, /*spatial*/ 0.0f);
+  return RgbwColor(0, 0, 0, (uint8_t)lroundf(s * brightness));
 }
 
-// Render one pattern into a NeoPixelBus strip.
+// Position-aware sweep: a wave of brightness travels across the field, so the
+// pulse physically moves from lantern to lantern. params let the conductor tune
+// it live: params[0] = period in ms, params[1] = wavelength in hundredths of a
+// coordinate unit (both fall back to sensible defaults when 0).
+inline RgbwColor sweep(int64_t synced_us, uint8_t brightness, float x, float y,
+                       const uint16_t params[4]) {
+  float period_s = params[0] ? params[0] / 1000.0f : 4.0f;
+  float wavelength = params[1] ? params[1] / 100.0f : 3.0f;
+  float s = pmath::sweepIntensity(synced_us, x, period_s, wavelength);
+  return RgbwColor(0, 0, 0, (uint8_t)lroundf(s * brightness));
+}
+
+// Render one pattern into a NeoPixelBus strip (all pixels share one color for
+// these 16-pixel rings; per-pixel spatial effects can come later).
 template <typename StripT>
 inline void render(StripT& strip, const Beacon& b, int64_t synced_us, float x,
                    float y) {
+  RgbwColor c;
   switch (b.pattern_id) {
-    case PULSE:
-    default: {
-      RgbwColor c = pulse(synced_us, b.brightness, x, y);
-      for (uint16_t i = 0; i < strip.PixelCount(); i++) strip.SetPixelColor(i, c);
+    case SWEEP:
+      c = sweep(synced_us, b.brightness, x, y, b.params);
       break;
-    }
+    case PULSE:
+    default:
+      c = pulse(synced_us, b.brightness);
+      break;
   }
+  for (uint16_t i = 0; i < strip.PixelCount(); i++) strip.SetPixelColor(i, c);
 }
 
 }  // namespace patterns

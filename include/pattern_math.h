@@ -35,6 +35,20 @@ inline int64_t floorDiv(int64_t a, int64_t b) {
   return q;
 }
 
+// Traveling-wave sweep: a brightness wave that moves across the field in +x, so
+// a pulse physically travels from one lantern to the next. A node at position x
+// sees the same waveform as a node at x=0, delayed by period_s * x / wavelength.
+//   period_s    time for one full cycle of the wave
+//   wavelength  spatial distance between successive wave peaks (same units as x)
+// Returns intensity in [0,1] (raised cosine).
+inline float sweepIntensity(int64_t synced_us, float x, float period_s,
+                            float wavelength) {
+  double secs = (double)synced_us / 1e6;
+  double ph = secs / (double)period_s - (double)x / (double)wavelength;
+  double p = ph - floor(ph);  // wrap to [0,1)
+  return 0.5f * (1.0f - cosf(2.0f * kPi * (float)p));
+}
+
 // Square-wave heartbeat: ON for the first half_period_us of each full cycle, OFF
 // for the second. Driven by synced time, so every node that agrees on the clock
 // agrees on the blink — two boards blink in unison iff they are in sync.

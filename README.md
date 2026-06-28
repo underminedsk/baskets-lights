@@ -62,10 +62,36 @@ silently-failing logic — clock offset, free-run-on-missed-beacon, seq-gap
 detection across `uint32` wrap, phase continuity. They do **not** cover radio
 range, real packet loss, or on-chip timing; those require field testing.
 
+## Provisioning a node (Milestone 2)
+
+Flash the *same* firmware to every node, then give each its identity over serial
+(`pio device monitor`, type the command + Enter). Values persist in NVS, so a
+node remembers who/where it is across reboots and battery swaps.
+
+```
+info            # print role + id + (x,y)   [+ pattern state on the conductor]
+id <n>          # set this node's unique id (1,2,3,…) and save
+pos <x> <y>     # set this node's field coordinate and save
+```
+
+On the **conductor** you can also change what the whole field renders, live:
+
+```
+pattern <n>     # 0 = uniform pulse, 2 = position-aware sweep (default)
+bri <n>         # global brightness 0–255
+param <i> <v>   # sweep knobs: param 0 = period (ms), param 1 = wavelength ×100
+```
+
+Arrange nodes left-to-right with increasing `x` (e.g. 0, 1.5, 3.0) and the sweep
+pulse visibly travels across them.
+
+> Tip: opening the serial port resets the board — wait ~2 s for it to boot
+> before typing, or your first command gets eaten.
+
 ## Roadmap
 
 1. **Sync proof** — conductor + 2 performers, synchronized pulse, serial diagnostics.
-2. (x,y) NVS identity + a pattern that sweeps across nodes by position.
+2. ✅ (x,y) NVS identity + a pattern that sweeps across nodes by position.
 3. Power management (modem-sleep, 160MHz, dusk deep-sleep) + LDR/battery ADC.
 4. Battery power; validate runtime against the energy budget.
 5. OTA via on-demand AP; enclosure.
