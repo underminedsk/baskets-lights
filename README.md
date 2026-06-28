@@ -17,6 +17,9 @@ GPIO2 heartbeat blinks at 1 Hz in unison across all nodes.
 Verified board: DOIT ESP32 DevKit V1 (CP2102, GPIO2 user LED present). LED data
 on GPIO13 (`D13`), powered from USB 5V.
 
+**Picking up the build?** Start with [`docs/HANDOFF.md`](docs/HANDOFF.md) — current
+state, the immediate next task, and the concrete plan for the next chunk.
+
 See [`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md) for the
 full project brief, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
 system design (parametric field, roles, MAC identity, layout table, and the
