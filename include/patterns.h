@@ -1,45 +1,34 @@
-// Pattern rendering. Every pattern is a pure function of synced time and the
-// node's (x,y) position, so a single pulse can physically travel across the
-// field once Milestone 2 wires in real coordinates. For Milestone 1 the node
-// position is (0,0) and patterns render identically everywhere.
+// Pattern rendering: turns the pure pattern math (pattern_math.h) into SK6812
+// RGBW colors on a NeoPixelBus strip. The time/space behavior lives in pmath::
+// so it can be unit-tested; this layer only maps intensity -> pixels.
 #pragma once
 
 #include <Arduino.h>
 #include <NeoPixelBus.h>
-#include <math.h>
 
 #include "beacon.h"
+#include "pattern_math.h"
 
 namespace patterns {
 
 enum PatternId : uint16_t {
-  PULSE = 0,        // slow global brightness pulse
-  PALETTE_DRIFT = 1 // hue drift across a palette
+  PULSE = 0,         // slow global brightness pulse
+  PALETTE_DRIFT = 1  // hue drift across a palette (later)
 };
 
-// Convert microseconds to a 0..1 phase over `period_s` seconds.
-inline float phase(int64_t t_us, float period_s) {
-  double secs = (double)t_us / 1e6;
-  double p = fmod(secs / period_s, 1.0);
-  if (p < 0) p += 1.0;
-  return (float)p;
-}
-
-// Slow breathing pulse: a smooth sine in white, gentle by design.
+// Slow breathing pulse in the white channel — calm and power-efficient by design.
 inline RgbwColor pulse(int64_t synced_us, uint8_t brightness, float x, float y) {
-  // 4s breathing period. (x,y) shifts the phase so the field can ripple later.
   const float period_s = 4.0f;
   const float spatial = (x + y) * 0.05f;  // 0 for Milestone 1
-  float p = phase(synced_us, period_s) + spatial;
-  float s = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * p));  // 0..1, smooth
-  uint8_t w = (uint8_t)roundf(s * brightness);
-  return RgbwColor(0, 0, 0, w);  // white channel only — calm, efficient
+  float s = pmath::pulseIntensity(synced_us, period_s, spatial);
+  uint8_t w = (uint8_t)lroundf(s * brightness);
+  return RgbwColor(0, 0, 0, w);
 }
 
 // Render one pattern into a NeoPixelBus strip.
 template <typename StripT>
-inline void render(StripT& strip, const Beacon& b, int64_t synced_us,
-                   float x, float y) {
+inline void render(StripT& strip, const Beacon& b, int64_t synced_us, float x,
+                   float y) {
   switch (b.pattern_id) {
     case PULSE:
     default: {

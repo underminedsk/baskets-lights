@@ -28,6 +28,22 @@ full project brief.
 > **Hard constraint:** sensing must use ADC1 pins (GPIO 32–39). ADC2 stops working
 > when the radio is active.
 
+## Build & test
+
+```bash
+pio run -e devkitc-conductor          # build conductor firmware
+pio run -e devkitc-performer          # build performer firmware
+pio run -e devkitc-conductor -t upload --upload-port /dev/cu.usbserial-XXXX
+pio device monitor                    # watch sync diagnostics
+pio test -e native                    # host unit tests — no hardware needed
+```
+
+The sync core (`include/sync.h`) and pattern math (`include/pattern_math.h`) are
+dependency-free and unit-tested on the host. Those tests cover the subtle,
+silently-failing logic — clock offset, free-run-on-missed-beacon, seq-gap
+detection across `uint32` wrap, phase continuity. They do **not** cover radio
+range, real packet loss, or on-chip timing; those require field testing.
+
 ## Roadmap
 
 1. **Sync proof** — conductor + 2 performers, synchronized pulse, serial diagnostics.

@@ -5,6 +5,9 @@
 // misses a beacon keeps free-running on its last known offset and re-locks on the
 // next one — a dropped packet causes at most slight drift, never a blackout.
 //
+// The sync logic itself lives in include/sync.h (dependency-free, unit-tested).
+// This file is the on-device glue: radio, LEDs, and the render loop.
+//
 // Role is chosen at build time via NODE_ROLE (see platformio.ini).
 
 #include <Arduino.h>
@@ -17,6 +20,7 @@
 #include "config.h"
 #include "beacon.h"
 #include "patterns.h"
+#include "sync.h"
 
 // 16x SK6812 RGBW ring. RMT channel 0 with SK6812 timing.
 NeoPixelBus<NeoGrbwFeature, NeoEsp32Rmt0Sk6812Method> strip(LED_COUNT, LED_PIN);
@@ -28,33 +32,14 @@ static float g_x = 0.0f;
 static float g_y = 0.0f;
 
 // ---- Sync state --------------------------------------------------------------
-// offset maps local clock -> conductor clock:  synced = esp_timer_get_time() + offset.
-// volatile because the most recent values are written from the ESP-NOW recv ISR
-// context and read from loop().
-static volatile int64_t  g_offset_us      = 0;       // conductor - local
-static volatile int64_t  g_last_beacon_us = 0;       // local time of last beacon
-static volatile bool     g_locked         = false;   // have we ever locked?
-static volatile uint32_t g_last_seq       = 0;
-static volatile uint32_t g_beacons_rx     = 0;
-static volatile uint32_t g_seq_gaps       = 0;       // missed/out-of-order beacons
-
-// Latest beacon contents (what to render). Copied out of the callback quickly.
-static volatile Beacon  g_beacon = {
-    BEACON_MAGIC, 0, patterns::PULSE, /*brightness*/ 96, /*palette*/ 0,
-    {0, 0, 0, 0}, 0};
+// Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
+// so 64-bit fields can't tear across the two contexts.
+static SyncState g_sync;
+static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::PULSE, /*brightness*/ 96,
+                             /*palette*/ 0, {0, 0, 0, 0}, 0};
+static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
-
-// Synced clock: conductor renders against its own clock (offset 0); a performer
-// adds its locked offset. Free-runs naturally when no beacon arrives — we just
-// keep using the last offset.
-static inline int64_t synced_us() {
-#if IS_CONDUCTOR
-  return now_us();
-#else
-  return now_us() + g_offset_us;
-#endif
-}
 
 // ---- ESP-NOW receive (performer) ---------------------------------------------
 // The recv callback signature changed in Arduino-ESP32 3.x. Support both.
@@ -70,18 +55,10 @@ void onBeacon(const uint8_t* mac, const uint8_t* data, int len) {
   if (b.magic != BEACON_MAGIC) return;
 
   int64_t local = now_us();
-  // Offset such that local + offset == conductor's epoch at receive. Transmission
-  // delay is sub-millisecond and ignored — fine for slow visual patterns.
-  g_offset_us = b.epoch_us - local;
-  g_last_beacon_us = local;
-
-  // Drop detection: any jump other than +1 in the sequence counts as a gap.
-  if (g_locked && b.seq != g_last_seq + 1) g_seq_gaps++;
-  g_last_seq = b.seq;
-  g_beacons_rx++;
-  g_locked = true;
-
-  memcpy((void*)&g_beacon, &b, sizeof(b));
+  portENTER_CRITICAL(&g_sync_mux);
+  syncOnBeacon(g_sync, b.epoch_us, b.seq, local);
+  g_beacon = b;
+  portEXIT_CRITICAL(&g_sync_mux);
 }
 #endif
 
@@ -116,12 +93,12 @@ static void radioBegin() {
 }
 
 #if IS_CONDUCTOR
+static uint32_t g_tx_seq = 0;
 static void broadcastBeacon() {
-  Beacon b;
-  memcpy(&b, (const void*)&g_beacon, sizeof(b));
+  Beacon b = g_beacon;
   b.magic = BEACON_MAGIC;
   b.epoch_us = now_us();
-  b.seq = g_last_seq++;
+  b.seq = g_tx_seq++;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
 }
 #endif
@@ -132,16 +109,22 @@ static void broadcastBeacon() {
 static void printDiag() {
 #if IS_CONDUCTOR
   Serial.printf("[conductor] t=%lld us  seq=%lu  pat=%u  bri=%u\n",
-                (long long)now_us(), (unsigned long)g_last_seq,
-                g_beacon.pattern_id, g_beacon.brightness);
+                (long long)now_us(), (unsigned long)g_tx_seq, g_beacon.pattern_id,
+                g_beacon.brightness);
 #else
-  int64_t age = now_us() - g_last_beacon_us;
-  bool stale = !g_locked || age > BEACON_STALE_US;
+  SyncState s;
+  portENTER_CRITICAL(&g_sync_mux);
+  s = g_sync;
+  portEXIT_CRITICAL(&g_sync_mux);
+
+  int64_t t = now_us();
+  bool stale = syncIsStale(s, t, BEACON_STALE_US);
+  int64_t age = beaconAge(s, t);
   Serial.printf(
       "[performer] %s  offset=%lld us  last_beacon=%lld ms ago  rx=%lu  gaps=%lu  seq=%lu\n",
-      stale ? "FREE-RUN" : "LOCKED  ", (long long)g_offset_us,
-      (long long)(g_locked ? age / 1000 : -1), (unsigned long)g_beacons_rx,
-      (unsigned long)g_seq_gaps, (unsigned long)g_last_seq);
+      stale ? "FREE-RUN" : "LOCKED  ", (long long)s.offset_us,
+      (long long)(age < 0 ? -1 : age / 1000), (unsigned long)s.beacons_rx,
+      (unsigned long)s.seq_gaps, (unsigned long)s.last_seq);
 #endif
 }
 
@@ -152,6 +135,8 @@ void setup() {
   delay(200);
   Serial.printf("\nDo Baskets Dream — role: %s  channel: %u\n",
                 IS_CONDUCTOR ? "CONDUCTOR" : "PERFORMER", WIFI_CHANNEL);
+
+  syncInit(g_sync);
 
   strip.Begin();
   strip.Show();  // clear
@@ -170,10 +155,20 @@ void loop() {
   }
 #endif
 
-  // Render against synced time. Snapshot the beacon to avoid a torn read mid-frame.
+  // Snapshot sync + beacon together, then render against synced time.
+  SyncState s;
   Beacon b;
-  memcpy(&b, (const void*)&g_beacon, sizeof(b));
-  patterns::render(strip, b, synced_us(), g_x, g_y);
+  portENTER_CRITICAL(&g_sync_mux);
+  s = g_sync;
+  b = g_beacon;
+  portEXIT_CRITICAL(&g_sync_mux);
+
+#if IS_CONDUCTOR
+  int64_t render_us = t;  // conductor renders against its own clock
+#else
+  int64_t render_us = syncedTime(s, t);
+#endif
+  patterns::render(strip, b, render_us, g_x, g_y);
   strip.Show();
 
   static int64_t next_diag = 0;
