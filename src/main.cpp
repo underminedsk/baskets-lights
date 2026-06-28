@@ -35,7 +35,7 @@ static float g_y = 0.0f;
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
 // so 64-bit fields can't tear across the two contexts.
 static SyncState g_sync;
-static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::PULSE, /*brightness*/ 96,
+static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::PULSE, /*brightness*/ 48,
                              /*palette*/ 0, {0, 0, 0, 0}, 0};
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 
