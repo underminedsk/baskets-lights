@@ -9,9 +9,10 @@ Built with **PlatformIO** (Arduino framework) for the ESP32.
 
 ## Status
 
-**Milestone 1 — sync proof:** firmware verified on hardware (single conductor:
-ring pulses, GPIO2 heartbeat blinks at 1 Hz off the synced clock). Multi-node
-sync test pending a second ESP32 (1 conductor + 2 performers over ESP-NOW).
+**Milestone 1 — sync proof: ✅ verified on hardware.** 1 conductor + 2 performers
+over ESP-NOW. A performer locks to the conductor's clock within ~1 s (FREE-RUN →
+LOCKED), holds a stable offset to within ~±100 µs of jitter, with `gaps=0`. The
+GPIO2 heartbeat blinks at 1 Hz in unison across all nodes.
 
 Verified board: DOIT ESP32 DevKit V1 (CP2102, GPIO2 user LED present). LED data
 on GPIO13 (`D13`), powered from USB 5V.
