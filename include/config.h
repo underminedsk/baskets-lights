@@ -17,9 +17,13 @@
 #define IS_CONDUCTOR (NODE_ROLE == ROLE_CONDUCTOR)
 
 // ---- LEDs --------------------------------------------------------------------
-// 16x SK6812 RGBW ring on GPIO18 (through a 470R series resistor).
+// 16x SK6812 RGBW ring data line (through a 470R series resistor).
+// GPIO13 ("D13") sits next to VIN/GND on the DOIT DevKit V1 top header, so on a
+// single breadboard the power, ground, and data pins are all reachable from one
+// free row. (Any non-strapping output GPIO works; the brief's original GPIO18 is
+// on the bottom header, which is awkward to reach when the board covers a row.)
 static constexpr uint16_t LED_COUNT = 16;
-static constexpr uint8_t  LED_PIN   = 18;
+static constexpr uint8_t  LED_PIN   = 13;
 
 // ---- Onboard heartbeat LED (bring-up aid) ------------------------------------
 // Blinks the board's built-in LED on the synced beat so two bare boards can be

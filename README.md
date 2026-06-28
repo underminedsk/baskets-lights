@@ -20,7 +20,7 @@ full project brief.
 | Function | Part | Connection |
 |---|---|---|
 | MCU | ESP32-WROOM-32 (DevKitC or FireBeetle 2 ESP32-E) | — |
-| LEDs | 16× SK6812 RGBW ring | GPIO18, 470Ω series resistor |
+| LEDs | 16× SK6812 RGBW ring | GPIO13 (`D13`), 470Ω series resistor |
 | Dusk sensor | LDR + 10kΩ divider | GPIO34 (ADC1) |
 | Battery sense | 47kΩ/10kΩ divider off 12V | GPIO35 (ADC1) |
 | Power | 12V LiFePO4 → buck → 5V | 5V to ESP32 VIN + ring; common ground |
