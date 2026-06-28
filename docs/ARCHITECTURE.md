@@ -136,8 +136,21 @@ controls, and calibration wizard are far better visually than a CLI. The protoco
 must support **bulk table transfer** (60 rows won't fit a typed line) and clean
 acks/errors so a program can drive the conductor reliably.
 
-**Not a runtime dependency:** unplug the laptop and the conductor + field continue
-on their stored table and program.
+**Not a runtime dependency:** unplug the admin host and the conductor + field
+continue on their stored table and program.
+
+**Deployment (no router/internet):** the admin host is a **Raspberry Pi** cabled
+to the conductor over USB. The Pi runs as its **own Wi-Fi access point** (hotspot
+via NetworkManager / RaspAP), so a phone joins the Pi's SSID directly and browses
+the UI (`http://baskets.local` or the AP IP) — no router, no internet, works on the
+playa. Set a WPA2 password. The Pi can also run the calibration CV (§6) on-site, so
+no separate laptop is needed. The Pi is a permanent convenience but **stays
+non-essential to runtime** — the authoritative table + show program live in the
+conductor's NVS, so the field survives the Pi being removed or failing.
+
+```
+phone --WiFi--> Pi (AP + web UI + CV + serial bridge) --USB--> conductor --ESP-NOW--> field
+```
 
 ## 6. Auto-calibration — drone + computer vision **[planned]**
 
