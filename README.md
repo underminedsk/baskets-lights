@@ -9,8 +9,12 @@ Built with **PlatformIO** (Arduino framework) for the ESP32.
 
 ## Status
 
-**Milestone 1 — sync proof (in progress):** 1 conductor + 2 performers, USB-powered,
-showing a synchronized slow pulse over ESP-NOW.
+**Milestone 1 — sync proof:** firmware verified on hardware (single conductor:
+ring pulses, GPIO2 heartbeat blinks at 1 Hz off the synced clock). Multi-node
+sync test pending a second ESP32 (1 conductor + 2 performers over ESP-NOW).
+
+Verified board: DOIT ESP32 DevKit V1 (CP2102, GPIO2 user LED present). LED data
+on GPIO13 (`D13`), powered from USB 5V.
 
 See [`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md) for the
 full project brief.
