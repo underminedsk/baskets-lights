@@ -1,0 +1,37 @@
+# Agent onboarding
+
+Firmware for **Do Baskets Dream** — a synchronized ESP32 LED-lantern installation.
+One conductor broadcasts a clock + pattern recipe over ESP-NOW; every performer
+renders `f(x, y, t)` locally and free-runs through dropped beacons. One firmware
+image runs on every node; role is a runtime NVS value.
+
+## Read these first, in order, at the start of every new session
+
+1. **[`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md)** —
+   the original spec: what we're building and the hard constraints.
+2. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — the design decisions and how
+   the pieces fit together (with `[done]`/`[planned]` status tags).
+3. **[`docs/HANDOFF.md`](docs/HANDOFF.md)** — the "you are here" doc: a running work
+   log of what's done and **the next task to pick up**. Start work from here.
+
+After those three you'll know what exists, why it's built that way, and what to do
+next. Build/flash/test commands and the read-serial-without-resetting trick are in
+`docs/HANDOFF.md` (Quick reference) and `docs/FLASHING.md`.
+
+## All code should be unit tested
+
+Write tests for new logic — don't ship untested code. The project's pattern: keep
+the real, silently-failing-able logic in **dependency-free headers** (no Arduino, no
+ESP-NOW, no globals) — like `sync.h`, `pattern_math.h`, `roster.h`, `table.h` — so it
+runs on the host, and put only the thin hardware glue in `src/main.cpp`. Add cases to
+`test/test_logic/` and keep **`pio test -e native` green** (it gates every change).
+When new logic lands in `main.cpp` and isn't host-reachable, that's the signal to
+extract it into a pure module so it *can* be tested.
+
+## Before uploading any firmware
+
+**Read [`docs/FLASHING.md`](docs/FLASHING.md) first.** Flashing has non-obvious
+gotchas that will waste a session if skipped — new boards need a one-time
+`erase_flash`, all boards enumerate as the same USB serial so port names shuffle on
+replug (flash by current port, not by which board you think it is), and you must use
+a data USB cable. Don't run `pio run -t upload` until you've read it.
