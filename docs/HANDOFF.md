@@ -8,10 +8,10 @@ next steps only.
 [`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · `pio test -e native`
-(39 pass) and `pio run -e devkitc` / `-e firebeetle` build clean. **Uncommitted:**
-the Stage-A radio duty-cycle + the SOLID boot-guard + the `GLOW` steady-color
-pattern — all hardware-verified incl. a 12 V battery-side power measurement (below);
-ready to commit.
+(39 pass) and `pio run -e devkitc` / `-e firebeetle` build clean. Everything is
+committed and pushed (`main` @ `5089d33` — Stage-A radio duty-cycle + SOLID
+boot-guard + `GLOW` pattern, all hardware-verified incl. the 12 V power measurement
+below).
 
 ---
 
@@ -170,7 +170,7 @@ dimming real shows. Watts are fine; the gating issue is *hours* → daytime slee
 
 ```bash
 export PATH="/opt/homebrew/bin:$PATH"
-pio test -e native                                  # 33 host tests
+pio test -e native                                  # 39 host tests
 pio run -e devkitc                                  # build
 pio run -e devkitc -t upload --upload-port /dev/cu.usbserial-XXXX
 pio device monitor -p /dev/cu.usbserial-XXXX        # provision + watch
@@ -186,12 +186,27 @@ defined *below* the global they touch. `patternConfigLoad/Save` sit *after*
 other config globals for exactly this reason. Don't move these loads into
 `configLoad()` or forward-declare the globals — a prior attempt broke the build.
 
-## Next task: Milestone 3 — power management
+## Next task: Milestone 3 — power management (Lever 1 Stage A done)
 
-The protocol foundation (both halves) is **done, hardware-verified, and pushed**.
-Battery is GO for nighttime (~12 nights); the open problems are (a) the active-night
-draw is RX-dominated and (b) calendar life at 24/7 is only ~5 days. Two levers, in
-this order:
+**Lever 1 Stage A (performer radio duty-cycle) is done, hardware-verified, measured,
+and pushed** (`main` @ `5089d33`) — see the bench result near the top. It cut node
+draw ~35% (85 → ~55 mA @ 12 V, ~12 → ~19 nights). **The radio is no longer the
+dominant term.**
+
+**Power budget now breaks into three roughly co-equal terms** (measured @ 5 V on a
+DevKitC): **CPU + board ~50 mA** (incl. the DevKit's power LED + CP2102 USB chip),
+**LEDs ~50 mA** (amber `GLOW` @ bri 48), **radio RX ~70 mA when on** (now paid only
+~13% of the time). So the remaining levers, roughly in impact order:
+1. **CPU floor** — the largest *constant* draw now. Attacked by Stage B and, more
+   powerfully, by **scheduled-wake + deep-sleep for static scenes** (next section).
+2. **LED brightness** — pure policy knob.
+3. **Daytime deep-sleep (Lever 2)** — the calendar-life fix (24/7 is still ~5 days).
+
+⏳ **Quick measurement still owed:** the CPU floor above was read *through USB*, which
+includes CP2102 + power-LED overhead absent on battery. Re-measure `bri 0` rest on
+the **12 V battery rig, USB disconnected** for the true MCU floor before sizing the
+sleep work. (FireBeetle, the M4 candidate, has a lower quiescent draw and shrinks
+this floor further.)
 
 ### Lever 1 (do first): radio off between beacons — performer-only
 
@@ -202,30 +217,44 @@ to resync. This attacks the dominant RX term (modem-sleep can't, see power note)
 **Conductor is exempt** — it must beacon every 250 ms (TX), and is typically
 wall-powered; gate all of this on `role == performer`.
 
-**Staged plan (measure each stage on the ET900/12 V DMM):**
+**Staged plan:**
 - **Stage A — radio duty-cycle, CPU stays on. ✅ DONE + host-tested +
-  hardware-verified** (see the bench result up top); ⏳ only the **power-draw
-  number** is left — meter `powersave on` vs `off` on the 12 V side to record the
-  saving. Built as `include/powersave.h` + glue in `main.cpp`; `powersave on|off`
-  toggles it live.
-- **Stage B — add CPU light-sleep between rendered frames** for the remaining CPU
-  draw. SK6812 latch their last color, so the LEDs hold during sleep; wake ~20–30 Hz
-  to re-render. Harder: verify whether `esp_timer`/systimer advances across
-  `esp_light_sleep_start()` — if not, add the slept RTC duration back or synced time
-  drifts. Defer until Stage A is measured.
+  hardware-verified + measured + pushed.** `include/powersave.h` + glue in
+  `main.cpp`; `powersave on|off` toggles it live (NVS `ps`, default on); `[duty]`
+  diag. Implementation notes preserved in §8.1 / the commit. The one thing *not*
+  worth doing: widening `DUTY_OFF_US` (4 s → 8 s/60 s) — at 13% duty we already
+  removed ~30 of the ~34 mA radio term, so a 60 s wake saves only ~4 mA more while
+  multiplying recipe-update latency. Diminishing returns; leave it at 4 s.
+- **Stage B — cut the CPU floor (now the biggest constant term).** Two flavors,
+  gated on whether the current scene is animated:
+  - **Animated patterns (pulse/sweep/drift):** CPU must re-render ~20–30 Hz, so the
+    play is **light-sleep between rendered frames**. SK6812 latch their last color,
+    so LEDs hold during the nap. Harder part: verify whether `esp_timer`/systimer
+    advances across `esp_light_sleep_start()` — if not, add the slept RTC duration
+    back or synced time drifts.
+  - **Static scenes (`GLOW` and any constant `f`):** the LEDs hold with the MCU
+    fully asleep, so the node can **deep/light-sleep for the whole inter-wake
+    interval** — attacking the radio *and* CPU floor at once, down toward LED-only
+    draw. This is the **"scheduled-wake" protocol idea** (below) and is the single
+    biggest remaining win for calm shows.
 
-**Gotchas / open questions to resolve while building:**
-1. **Radio on/off mechanism.** `esp_wifi_stop()`/`start()` (or `esp_now_deinit/init`)
-   tears down peers — must re-add the broadcast peer (and conductor peer) on each
-   wake; recv-cb registration may persist, peers don't. Measure the on/off latency
-   and confirm a beacon is reliably caught in the window. This is the main risk —
-   prototype the cycle first.
-2. **Drift budget.** Free-running ~3–5 s on the last offset is sub-ms drift (crystals
-   ~tens of ppm); fine for the slow patterns. Tune the off-interval for the
-   power/accuracy/recipe-latency trade (a pattern change now lands up to one interval
-   late — acceptable for an art piece, note it).
-3. **Later refinement:** predict the next beacon time from the synced clock and wake
-   *just* before it, shrinking the listen window further.
+**Scheduled-wake + deep-sleep protocol (design thread, not yet built):** because
+every node shares the synced clock, instead of each performer waking on its own
+~4.6 s timer, have them **all wake at a shared wall-clock boundary** (e.g. each
+synced-time minute), the conductor **bursts the current recipe during that window**,
+nodes catch it and sleep again. No "subscribe" handshake is needed — ESP-NOW is
+broadcast and the shared clock *is* the coordination. The real prize isn't more
+radio savings (Stage A already got those) but that a known next-wake time lets a
+node **deep-sleep between windows on static scenes** (LEDs latched), and it makes
+Lever 2's deep-sleep/rejoin coherent. Costs to design around: recipe/show updates
+land up to one wake-interval late (fine for a programmed show, painful for live
+tuning), and each window gets more critical (miss → longer free-run + delayed
+update; mitigate with a longer burst + the conductor repeating it).
+
+**Drift budget (still holds):** free-running tens of seconds on the last offset is
+<~5 ms relative drift (crystals ~tens of ppm) — invisible on the slow patterns, so
+minute-scale wake intervals are fine for *timekeeping*; the limiter is update
+latency, not sync.
 
 ### Lever 2 (then): daytime deep-sleep — calendar life
 
