@@ -24,12 +24,14 @@ static constexpr uint8_t DEFAULT_ROLE   = ROLE_PERFORMER;
 static constexpr uint16_t LED_COUNT = 16;
 static constexpr uint8_t  LED_PIN   = 13;
 
-// Power-safety brightness ceiling. Every node clamps the rendered brightness to
-// this, so no pattern or broadcast recipe can exceed the per-node power budget no
-// matter what gets authored. Default 255 = no clamp (so the worst-case SOLID draw
-// can be measured at full scale); lower it to the measured power-safe cap once the
-// bench numbers are in. See the worst-case measurement in docs/.
-static constexpr uint8_t MAX_BRIGHTNESS = 255;
+// Power guardrail. Every node clamps the rendered brightness to this, so no
+// pattern or broadcast recipe can exceed the per-node power budget no matter what
+// gets authored. Set to 192 (75%) after the worst-case bench measurement: solid
+// white at 255 measured 0.76 A @ 5 V (~3 nights sustained), which is safe for the
+// hardware but a battery risk if a pathological all-white show ran all night; 192
+// keeps the worst case ~3.8 nights while barely dimming real colored shows. Raise
+// toward 255 only if a brighter ceiling is wanted and battery life allows.
+static constexpr uint8_t MAX_BRIGHTNESS = 192;
 
 // ---- Onboard heartbeat LED (bring-up aid) ------------------------------------
 // Blinks the board's built-in LED on the synced beat so two bare boards can be
