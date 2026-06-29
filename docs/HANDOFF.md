@@ -5,7 +5,7 @@ Design rationale lives in [`ARCHITECTURE.md`](ARCHITECTURE.md); this is state +
 next steps only.
 
 **Read order:** this doc → `ARCHITECTURE.md` → `README.md` →
-[`FLASHING.md`](FLASHING.md) → [`do_baskets_firmware_brief.md`](do_baskets_firmware_brief.md).
+[`FLASHING.md`](FLASHING.md) → [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md).
 
 **Repo:** https://github.com/underminedsk/baskets-lights · everything is committed
 and pushed; `pio test -e native` (33 pass) and `pio run -e devkitc` build clean.

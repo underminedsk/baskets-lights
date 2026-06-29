@@ -20,7 +20,7 @@ on GPIO13 (`D13`), powered from USB 5V.
 **Picking up the build?** Start with [`docs/HANDOFF.md`](docs/HANDOFF.md) — current
 state, the immediate next task, and the concrete plan for the next chunk.
 
-See [`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md) for the
+See [`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md) for the
 full project brief, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
 system design (parametric field, roles, MAC identity, layout table, and the
 drone + computer-vision auto-calibration plan).

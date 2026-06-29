@@ -7,7 +7,7 @@ image runs on every node; role is a runtime NVS value.
 
 ## Read these first, in order, at the start of every new session
 
-1. **[`docs/do_baskets_firmware_brief.md`](docs/do_baskets_firmware_brief.md)** —
+1. **[`docs/PROJECT_BRIEF.md`](docs/PROJECT_BRIEF.md)** —
    the original spec: what we're building and the hard constraints.
 2. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — the design decisions and how
    the pieces fit together (with `[done]`/`[planned]` status tags).

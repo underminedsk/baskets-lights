@@ -1,6 +1,6 @@
 # Do Baskets Dream — System Architecture & Design
 
-Companion to [`do_baskets_firmware_brief.md`](do_baskets_firmware_brief.md). The
+Companion to [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md). The
 brief is the original spec; this doc records the architectural decisions made
 while building it. Status tags: **[done]** shipped, **[wip]** in progress,
 **[planned]** designed, not yet built.
@@ -74,10 +74,10 @@ Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
   - **[planned]** true 2-D: plane wave at an arbitrary **angle**, **radial ripple**
     from a center point. `params` encode direction/center.
 
-Every node hard-clamps rendered brightness to `MAX_BRIGHTNESS` (config.h), so no
-pattern or recipe can exceed the per-node power budget regardless of what is
-authored. It defaults to 255 (measure the worst case at full scale), then drops to
-the measured power-safe cap. See power management below.
+Every node hard-clamps rendered brightness to `MAX_BRIGHTNESS` (config.h, **192**),
+so no pattern or recipe can exceed the per-node power budget regardless of what is
+authored. Set from the worst-case bench measurement (solid white at 255 drew
+0.76 A @ 5 V); see power management below.
 
 Pure pattern math lives in `include/pattern_math.h` (host-unit-tested); the
 LED-library binding is in `include/patterns.h`.
