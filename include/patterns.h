@@ -56,7 +56,7 @@ inline RgbwColor paletteDrift(int64_t synced_us, uint8_t brightness, float x,
 // Render one pattern into a NeoPixelBus strip (all pixels share one color for
 // these 16-pixel rings; per-pixel spatial effects can come later).
 template <typename StripT>
-inline void render(StripT& strip, const Beacon& b, int64_t synced_us, float x,
+inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x,
                    float y) {
   RgbwColor c;
   switch (b.pattern_id) {

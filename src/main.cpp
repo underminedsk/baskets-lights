@@ -20,11 +20,13 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_timer.h>
+#include <esp_mac.h>  // esp_read_mac / ESP_MAC_WIFI_STA
 
 #include "config.h"
 #include "beacon.h"
 #include "identity.h"
 #include "patterns.h"
+#include "roster.h"
 #include "sync.h"
 
 // 16x SK6812 RGBW ring. RMT channel 0 with SK6812 timing.
@@ -36,8 +38,16 @@ static const uint8_t BROADCAST_ADDR[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static Preferences  g_prefs;
 static NodeIdentity g_id   = {0, 0.0f, 0.0f};
 static uint8_t      g_role = DEFAULT_ROLE;
+static uint8_t      g_mac[6] = {0};  // this node's WiFi STA MAC — stable identity
 
 static inline bool isConductor() { return g_role == ROLE_CONDUCTOR; }
+
+// Format a MAC into a caller-supplied 18-byte buffer ("AA:BB:CC:DD:EE:FF").
+static const char* macStr(const uint8_t mac[6], char out[18]) {
+  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2],
+           mac[3], mac[4], mac[5]);
+  return out;
+}
 
 static void configLoad() {
   g_prefs.begin("node", /*readonly*/ true);
@@ -66,9 +76,26 @@ static void roleSave() {
 // Written from the ESP-NOW recv callback, read from loop(). Guarded by a spinlock
 // so 64-bit fields can't tear across the two contexts.
 static SyncState g_sync;
-static Beacon    g_beacon = {BEACON_MAGIC, 0, patterns::SWEEP, /*brightness*/ 48,
+static BeaconMsg g_beacon = {{BEACON_MAGIC, PROTO_VERSION, MSG_BEACON},
+                             /*epoch*/ 0, patterns::SWEEP, /*brightness*/ 48,
                              /*palette*/ 0, {0, 0, 0, 0}, 0};
 static portMUX_TYPE g_sync_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Performer -> conductor registration state. The conductor's MAC is learned from
+// the recv-info of an incoming beacon (written in the recv callback under
+// g_sync_mux); the actual peer-add + unicast happens from loop(), since doing
+// radio work inside the recv callback is unsafe.
+static uint8_t  g_conductor_mac[6] = {0};
+static bool     g_have_conductor = false;
+static bool     g_conductor_peer_added = false;
+static int64_t  g_next_register_us = 0;
+
+// Conductor roster: every node that has registered, keyed on MAC. The logic lives
+// in roster.h (host-tested); here we hold one instance and a spinlock, since it is
+// written from the recv callback (MSG_REGISTER) and read from loop() (the `roster`
+// command). The lock wraps each access, mirroring g_sync_mux around syncOnBeacon.
+static Roster       g_roster;
+static portMUX_TYPE g_roster_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline int64_t now_us() { return esp_timer_get_time(); }
 
@@ -100,25 +127,49 @@ static void patternConfigSave() {
 }
 
 // ---- ESP-NOW receive ---------------------------------------------------------
-// Registered on every node. A conductor renders against its own clock and ignores
-// the sync state, so receiving here is harmless for it. The recv callback
-// signature changed in Arduino-ESP32 3.x — support both.
+// Registered on every node. Validates the common header, then dispatches on the
+// message type. The recv callback signature changed in Arduino-ESP32 3.x —
+// support both, and grab the sender MAC, which we need for bidirectional traffic.
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-void onBeacon(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  const uint8_t* src = info->src_addr;
 #else
-void onBeacon(const uint8_t* mac, const uint8_t* data, int len) {
+void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
+  const uint8_t* src = mac;
 #endif
-  if (len != sizeof(Beacon)) return;
-  Beacon b;
-  memcpy(&b, data, sizeof(b));
-  if (b.magic != BEACON_MAGIC) return;
-  if (isConductor()) return;  // a conductor doesn't follow anyone
+  if (len < (int)sizeof(MsgHeader)) return;
+  MsgHeader hdr;
+  memcpy(&hdr, data, sizeof(hdr));
+  if (hdr.magic != BEACON_MAGIC || hdr.version != PROTO_VERSION) return;
 
-  int64_t local = now_us();
-  portENTER_CRITICAL(&g_sync_mux);
-  syncOnBeacon(g_sync, b.epoch_us, b.seq, local);
-  g_beacon = b;
-  portEXIT_CRITICAL(&g_sync_mux);
+  switch (hdr.type) {
+    case MSG_BEACON: {
+      if (isConductor()) return;  // a conductor follows no one
+      if (len != (int)sizeof(BeaconMsg)) return;
+      BeaconMsg b;
+      memcpy(&b, data, sizeof(b));
+      int64_t local = now_us();
+      portENTER_CRITICAL(&g_sync_mux);
+      syncOnBeacon(g_sync, b.epoch_us, b.seq, local);
+      g_beacon = b;
+      memcpy(g_conductor_mac, src, 6);  // remember who to register with
+      g_have_conductor = true;
+      portEXIT_CRITICAL(&g_sync_mux);
+      break;
+    }
+    case MSG_REGISTER: {
+      if (!isConductor()) return;  // only the conductor keeps a roster
+      if (len != (int)sizeof(RegisterMsg)) return;
+      RegisterMsg r;
+      memcpy(&r, data, sizeof(r));
+      portENTER_CRITICAL(&g_roster_mux);
+      rosterUpsert(g_roster, r.mac, r.id, r.fw, now_us());
+      portEXIT_CRITICAL(&g_roster_mux);
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 // ---- Radio setup -------------------------------------------------------------
@@ -146,16 +197,48 @@ static void radioBegin() {
   peer.encrypt = false;
   esp_now_add_peer(&peer);
 
-  esp_now_register_recv_cb(onBeacon);  // every node; conductor ignores in cb
+  esp_now_register_recv_cb(onRecv);  // every node; dispatches on message type
 }
 
 static uint32_t g_tx_seq = 0;
 static void broadcastBeacon() {
-  Beacon b = g_beacon;
-  b.magic = BEACON_MAGIC;
+  BeaconMsg b = g_beacon;
+  b.hdr.magic = BEACON_MAGIC;
+  b.hdr.version = PROTO_VERSION;
+  b.hdr.type = MSG_BEACON;
   b.epoch_us = now_us();
   b.seq = g_tx_seq++;
   esp_now_send(BROADCAST_ADDR, (const uint8_t*)&b, sizeof(b));
+}
+
+// Performer: announce ourselves to the conductor we've heard, periodically so the
+// roster self-heals after a conductor restart. Peer-add + send happen here (in
+// loop context), never in the recv callback.
+static void maybeRegister(int64_t t) {
+  if (isConductor()) return;
+
+  bool have;
+  uint8_t cmac[6];
+  portENTER_CRITICAL(&g_sync_mux);
+  have = g_have_conductor;
+  if (have) memcpy(cmac, g_conductor_mac, 6);
+  portEXIT_CRITICAL(&g_sync_mux);
+  if (!have || t < g_next_register_us) return;
+  g_next_register_us = t + REGISTER_INTERVAL_US;
+
+  if (!g_conductor_peer_added) {
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, cmac, 6);
+    peer.channel = WIFI_CHANNEL;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) == ESP_OK) g_conductor_peer_added = true;
+  }
+  if (!g_conductor_peer_added) return;
+
+  RegisterMsg r = {{BEACON_MAGIC, PROTO_VERSION, MSG_REGISTER}, {0}, g_id.id,
+                   PROTO_VERSION};
+  memcpy(r.mac, g_mac, 6);
+  esp_now_send(cmac, (const uint8_t*)&r, sizeof(r));
 }
 
 // ---- Diagnostics -------------------------------------------------------------
@@ -185,7 +268,8 @@ static void printDiag() {
 
 // ---- Serial command interface ------------------------------------------------
 // Flash identical firmware to every board, then provision each over serial:
-//   info                 print role + identity + pattern state
+//   info                 print role + identity (incl. MAC) + pattern state
+//   roster               (conductor) list nodes that have registered (MAC/id/fw)
 //   role <conductor|performer>   set this node's role and save to NVS
 //   id <n>               set this node's id and save to NVS
 //   pos <x> <y>          set this node's (x,y) coordinate and save to NVS
@@ -194,11 +278,36 @@ static void printDiag() {
 //   bri <n>              brightness 0-255
 //   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100
 static void printInfo() {
-  Serial.printf("role=%s  id=%u  x=%.2f  y=%.2f\n",
-                isConductor() ? "CONDUCTOR" : "PERFORMER", g_id.id, g_id.x, g_id.y);
+  char mac[18];
+  Serial.printf("role=%s  id=%u  mac=%s  x=%.2f  y=%.2f\n",
+                isConductor() ? "CONDUCTOR" : "PERFORMER", g_id.id,
+                macStr(g_mac, mac), g_id.x, g_id.y);
   Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
                 g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
                 g_beacon.params[2], g_beacon.params[3]);
+}
+
+// Conductor-only: print the roster of nodes that have registered. Snapshots the
+// shared array under the spinlock, then prints outside it.
+static void printRoster() {
+  if (!isConductor()) {
+    Serial.println("(roster lives on the conductor)");
+    return;
+  }
+  Roster snap;
+  portENTER_CRITICAL(&g_roster_mux);
+  snap = g_roster;
+  portEXIT_CRITICAL(&g_roster_mux);
+
+  int64_t t = now_us();
+  Serial.printf("roster: %u node(s)\n", snap.count);
+  for (uint8_t i = 0; i < snap.count; i++) {
+    char mac[18];
+    Serial.printf("  [%u] %s  id=%u  fw=%u  last_seen=%lld ms ago\n", i,
+                  macStr(snap.entries[i].mac, mac), snap.entries[i].id,
+                  snap.entries[i].fw,
+                  (long long)((t - snap.entries[i].last_us) / 1000));
+  }
 }
 
 static void handleCommand(char* line) {
@@ -207,6 +316,8 @@ static void handleCommand(char* line) {
 
   if (!strcmp(cmd, "info")) {
     printInfo();
+  } else if (!strcmp(cmd, "roster")) {
+    printRoster();
   } else if (!strcmp(cmd, "role")) {
     char* a = strtok(nullptr, " \t");
     if (a) {
@@ -268,6 +379,8 @@ void setup() {
 
   configLoad();
   patternConfigLoad();
+  esp_read_mac(g_mac, ESP_MAC_WIFI_STA);  // stable identity, read from efuse
+  rosterInit(g_roster);
   if (!identityProvisioned(g_id))
     Serial.println("  (unprovisioned — set 'role …', 'id <n>', 'pos <x> <y>')");
   printInfo();
@@ -295,11 +408,13 @@ void loop() {
       broadcastBeacon();
       next_beacon = t + BEACON_INTERVAL_US;
     }
+  } else {
+    maybeRegister(t);  // announce ourselves to the conductor periodically
   }
 
   // Snapshot sync + beacon together, then render against the right clock.
   SyncState s;
-  Beacon b;
+  BeaconMsg b;
   portENTER_CRITICAL(&g_sync_mux);
   s = g_sync;
   b = g_beacon;

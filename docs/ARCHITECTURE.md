@@ -43,10 +43,11 @@ two conductors at once). One image + NVS role removes that entirely.
 
 ## 3. Identity vs. position — keep them separate
 
-- **Identity = the ESP32 MAC address.** **[planned]** Globally unique, burned in,
-  zero provisioning, no collisions. Replaces hand-assigned numeric IDs as the key
-  for everything (roster, layout table, calibration). A friendly `id` may persist
-  as a human label, but the MAC is authoritative.
+- **Identity = the ESP32 MAC address.** **[done]** Read at boot
+  (`esp_read_mac`/`ESP_MAC_WIFI_STA`), shown in `info`, and reported in REGISTER so
+  the conductor's roster is MAC-keyed. Globally unique, burned in, zero
+  provisioning, no collisions. The friendly `id` persists as a human label, but the
+  MAC is authoritative. (Layout table keying on MAC is Half 2.)
 - **Position = `(x, y)`.** **[done, manual]** Per-deployment, changes whenever the
   field is re-laid. **Relative geometry only — no GPS / metric coords needed**;
   patterns (waves, ripples) care about relative positions, so normalized image
@@ -204,19 +205,24 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 
 ## 7. Wire protocol **[partly done]**
 
-- **[done]** One-way `Beacon` (clock + recipe), identified by `magic`, broadcast on
-  a fixed channel to `FF:FF:FF:FF:FF:FF`, `WIFI_STA`, modem-sleep on.
-- **[planned]** Multi-message header with a `type` field:
-  `BEACON`, `REGISTER`, `ROSTER`, `CALIB_START`, `ASSIGN_POS`, `ACK`, …
-- **[planned]** Bidirectional ESP-NOW: a node learns the conductor's MAC from the
-  recv callback, adds it as a peer, and unicasts back (register / ACK).
+- **[done]** Common header `MsgHeader {uint32 magic; uint8 version; uint8 type;}`
+  on every packet; receiver validates magic+version then dispatches on `type`.
+  Types: `MSG_BEACON` (hot path), `MSG_REGISTER` (live); `MSG_ROSTER`/`MSG_TABLE`/
+  `MSG_ACK` reserved for Half 2. `PROTO_VERSION` is rejected on mismatch.
+- **[done]** `MSG_BEACON` (clock + recipe) broadcast on a fixed channel to
+  `FF:FF:FF:FF:FF:FF`, `WIFI_STA`. The hot path (sync.h) reads `epoch_us`+`seq`.
+- **[done]** Bidirectional ESP-NOW: a performer learns the conductor's MAC from the
+  recv-info, adds it as a peer, and unicasts `MSG_REGISTER {mac, id, fw}` every 10 s;
+  the conductor builds a MAC-keyed roster (`roster` serial command).
+- **[planned]** `MSG_TABLE` layout broadcast + `MSG_ACK`; richer Pi↔conductor
+  serial (Half 2).
 - Time base: 64-bit `esp_timer` microseconds throughout (no 32-bit `millis` wrap).
 
 ## 8. Resilience model
 
 - Missed beacon → free-run on last offset; re-lock on next. **[done]**
-- Cold boot → read role/identity/position from NVS, lock within ~1–2 s, resume.
-  **[done for role/pos; MAC/table planned]**
+- Cold boot → read role/identity/position from NVS + MAC from efuse, lock within
+  ~1–2 s, resume. **[done for role/pos/MAC; table cache planned (Half 2)]**
 - Calibration capture is open-loop (no live RF dependency during the fly-over).
 - NVS caches (role, position, pattern config) survive power cycles / battery swaps.
 
@@ -227,7 +233,8 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 | 1 — sync proof (conductor + performers) | ✅ done, hardware-verified |
 | 2 — NVS identity + position-aware sweep | ✅ done, hardware-verified |
 | Refactor — symmetric runtime role + NVS pattern persistence + rainbow drift pattern | ✅ done, hardware-verified |
-| Protocol foundation — message types, bidirectional ESP-NOW, MAC identity, layout-table broadcast + cache | 📐 planned (next) |
+| Protocol foundation, Half 1 — typed header, MAC identity, bidirectional ESP-NOW, registration + roster | ✅ done, hardware-verified |
+| Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache, structured Pi↔conductor serial | 📐 planned (next) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
 | 3 — power management (modem-sleep, dusk deep-sleep, LDR/battery ADC) | 📐 planned |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |

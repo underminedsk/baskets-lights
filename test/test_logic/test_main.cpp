@@ -10,6 +10,7 @@
 
 #include "sync.h"
 #include "pattern_math.h"
+#include "roster.h"
 
 // ---- Sync: locking & offset --------------------------------------------------
 
@@ -246,6 +247,72 @@ void test_drift_hue_unison_by_default_but_travels_with_spatial() {
   TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.25f, at1 - at0);
 }
 
+// ---- Roster: conductor's MAC-keyed node list --------------------------------
+
+// Distinct MAC per index, so tests can fabricate nodes cheaply.
+static void macN(uint8_t out[6], uint8_t n) {
+  out[0] = 0xDE; out[1] = 0xAD; out[2] = 0xBE; out[3] = 0xEF; out[4] = 0x00;
+  out[5] = n;
+}
+
+void test_roster_starts_empty() {
+  Roster r;
+  rosterInit(r);
+  TEST_ASSERT_EQUAL_UINT8(0, r.count);
+  uint8_t mac[6];
+  macN(mac, 1);
+  TEST_ASSERT_EQUAL_INT(-1, rosterFind(r, mac));
+}
+
+void test_roster_appends_distinct_macs() {
+  Roster r;
+  rosterInit(r);
+  uint8_t a[6], b[6];
+  macN(a, 1);
+  macN(b, 2);
+  TEST_ASSERT_TRUE(rosterUpsert(r, a, 1, 1, 100));
+  TEST_ASSERT_TRUE(rosterUpsert(r, b, 2, 1, 200));
+  TEST_ASSERT_EQUAL_UINT8(2, r.count);
+  TEST_ASSERT_EQUAL_INT(0, rosterFind(r, a));
+  TEST_ASSERT_EQUAL_INT(1, rosterFind(r, b));
+}
+
+void test_roster_dedup_updates_in_place() {
+  // The same node re-registering must refresh its row, not duplicate it.
+  Roster r;
+  rosterInit(r);
+  uint8_t a[6];
+  macN(a, 1);
+  rosterUpsert(r, a, 1, 1, 100);
+  rosterUpsert(r, a, 7, 2, 500);  // same MAC, new id/fw/time
+  TEST_ASSERT_EQUAL_UINT8(1, r.count);
+  int i = rosterFind(r, a);
+  TEST_ASSERT_EQUAL_UINT16(7, r.entries[i].id);
+  TEST_ASSERT_EQUAL_UINT8(2, r.entries[i].fw);
+  TEST_ASSERT_EQUAL_INT64(500, r.entries[i].last_us);
+}
+
+void test_roster_overflow_drops_new_keeps_existing() {
+  Roster r;
+  rosterInit(r);
+  for (int n = 0; n < ROSTER_MAX; n++) {
+    uint8_t m[6];
+    macN(m, (uint8_t)n);
+    TEST_ASSERT_TRUE(rosterUpsert(r, m, (uint16_t)n, 1, n));
+  }
+  TEST_ASSERT_EQUAL_UINT8(ROSTER_MAX, r.count);
+  // A brand-new MAC is dropped when full (returns false); count unchanged.
+  uint8_t over[6];
+  macN(over, 200);
+  TEST_ASSERT_FALSE(rosterUpsert(r, over, 999, 1, 9999));
+  TEST_ASSERT_EQUAL_UINT8(ROSTER_MAX, r.count);
+  // But an already-known MAC still updates in place even when full.
+  uint8_t known[6];
+  macN(known, 3);
+  TEST_ASSERT_TRUE(rosterUpsert(r, known, 42, 1, 12345));
+  TEST_ASSERT_EQUAL_UINT16(42, r.entries[rosterFind(r, known)].id);
+}
+
 // ---- Heartbeat: synced square wave ------------------------------------------
 
 void test_heartbeat_square_wave() {
@@ -304,6 +371,10 @@ int main(int, char**) {
   RUN_TEST(test_hsv_wraps_and_stays_in_gamut);
   RUN_TEST(test_drift_hue_cycles_in_range);
   RUN_TEST(test_drift_hue_unison_by_default_but_travels_with_spatial);
+  RUN_TEST(test_roster_starts_empty);
+  RUN_TEST(test_roster_appends_distinct_macs);
+  RUN_TEST(test_roster_dedup_updates_in_place);
+  RUN_TEST(test_roster_overflow_drops_new_keeps_existing);
   RUN_TEST(test_heartbeat_square_wave);
   RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
   RUN_TEST(test_heartbeat_handles_negative_synced_time);

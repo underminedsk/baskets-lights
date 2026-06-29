@@ -59,6 +59,13 @@ static constexpr int64_t BEACON_INTERVAL_US = 250000;
 // diagnostics — it keeps free-running regardless (no blanking on missed beacons).
 static constexpr int64_t BEACON_STALE_US = 2000000;  // 2s
 
+// ---- Registration / roster ---------------------------------------------------
+// A performer re-announces itself (REGISTER) to the conductor this often, so the
+// conductor's roster self-heals after a conductor restart. Cheap: one tiny packet
+// per node every interval, far below the beacon rate. (The roster itself and its
+// capacity ROSTER_MAX live in the dependency-free, host-tested include/roster.h.)
+static constexpr int64_t REGISTER_INTERVAL_US = 10000000;  // 10s
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s
