@@ -81,6 +81,15 @@ values — it's ping-ponging between two clocks. Fix: power down the extra
 conductor. (With one conductor, a locked performer holds `gaps=0` and a steady
 offset.)
 
+### 3.5 Don't leave a USB power meter (ET900) inline while flashing/debugging
+A pass-through USB power meter in the cable between the Mac and the board will
+**corrupt the serial** (garbled at *every* baud — bit-level mangling of D+/D−, not
+a baud mismatch) and can **brown out the radio-init current spike**, producing an
+`rst:ets …` boot loop. Symptoms mimic gotcha #1, but `erase_flash` won't fix it —
+removing the meter does. Flash and debug with the board plugged **straight** into
+the Mac; measure power on the **12 V battery side** with a DMM in series instead
+(that reading is authoritative anyway). This cost a session before we spotted it.
+
 ### 4. Use a DATA USB cable, install the driver
 - Charge-only cables won't enumerate a port — if `pio device list` shows nothing
   new, suspect the cable first.

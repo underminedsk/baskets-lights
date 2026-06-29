@@ -15,8 +15,10 @@ enum PatternId : uint16_t {
   PULSE = 0,         // uniform slow breathing pulse (all nodes in unison)
   PALETTE_DRIFT = 1, // smooth rainbow hue cycle (optionally traveling by position)
   SWEEP = 2,         // brightness wave that travels across the field by position
-  SOLID = 3          // every pixel full RGBW at `brightness` — the worst-case
+  SOLID = 3,         // every pixel full RGBW at `brightness` — the worst-case
                      // power draw, for bench-measuring the per-node ceiling
+  GLOW = 4           // steady solid color at a fixed hue (no time term): the
+                     // field holds one calm warm color, flat (non-pulsing) draw
 };
 
 // Uniform breathing pulse in the white channel — every node in unison.
@@ -63,6 +65,22 @@ inline RgbwColor solid(uint8_t brightness) {
   return RgbwColor(brightness, brightness, brightness, brightness);
 }
 
+// Steady solid color: a constant hue with NO time dependence, so the whole field
+// holds one calm color and the LED draw is flat (no pulse). Fits the warm/gentle
+// aesthetic and is the realistic-conservative pattern for power measurement (a
+// steady draw isolates the radio duty-cycle from LED variation). RGB channels
+// only (white off). Colors come from the host-tested pmath::hsvToRgb.
+//   params[0] = hue in degrees, 0-359  (e.g. 30 = orange, 50 = amber/yellow)
+//   params[1] = saturation in percent, 1-100; 0 falls back to 100 (full)
+inline RgbwColor glow(uint8_t brightness, const uint16_t params[4]) {
+  float h = (params[0] % 360) / 360.0f;
+  uint16_t sp = params[1] ? (params[1] > 100 ? 100 : params[1]) : 100;
+  float r, g, b;
+  pmath::hsvToRgb(h, sp / 100.0f, 1.0f, r, g, b);
+  return RgbwColor((uint8_t)lroundf(r * brightness), (uint8_t)lroundf(g * brightness),
+                   (uint8_t)lroundf(b * brightness), 0);
+}
+
 // Render one pattern into a NeoPixelBus strip (all pixels share one color for
 // these 16-pixel rings; per-pixel spatial effects can come later).
 template <typename StripT>
@@ -78,6 +96,9 @@ inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x
       break;
     case SOLID:
       c = solid(b.brightness);
+      break;
+    case GLOW:
+      c = glow(b.brightness, b.params);
       break;
     case PULSE:
     default:

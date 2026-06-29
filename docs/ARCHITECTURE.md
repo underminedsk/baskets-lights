@@ -245,6 +245,28 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 - Calibration capture is open-loop (no live RF dependency during the fly-over).
 - NVS caches (role, position, pattern config) survive power cycles / battery swaps.
 
+### 8.1 Performer radio duty-cycle **[done — Stage A, hardware-verified]**
+
+The free-run property (a performer renders `f(x,y,t)` from the synced clock without
+needing live RF) is what lets us **power the radio off** most of the time. A
+performer wakes the radio for a brief listen window every few seconds — just long
+enough to catch a beacon and re-lock the clock (and pick up any recipe/table
+change) — then sleeps it and keeps rendering from the coasting clock. This is the
+right lever for the night draw because the radio is RX-dominated and **modem-sleep
+is ineffective in connectionless ESP-NOW** (no AP/DTIM, so RX otherwise stays on).
+
+Decisions: the schedule is pure, host-tested logic (`include/powersave.h`,
+mirroring `sync.h`); the on-device glue (`main.cpp`) owns the teardown/bring-up,
+which must **re-add the broadcast peer and recv callback on every wake** because
+`esp_wifi_stop()`/`start()` drops the peer table. The cold-boot window is held open
+until the first beacon is caught, so a battery swap still re-locks fast (the
+"single blink" guarantee) before any sleeping begins. The **conductor is exempt**
+(it must beacon at 4 Hz and is wall-powered) — gated on `role == performer`. A
+runtime/NVS toggle (`powersave on|off`) exists so the night draw can be A/B'd on
+the meter. Trade-off: a recipe/position change lands up to one OFF interval (~4 s)
+late — acceptable for a slow art piece. Stage B (CPU light-sleep between frames)
+and Lever 2 (dusk deep-sleep for calendar life) are still planned.
+
 ## 9. Milestone mapping
 
 | Milestone | Status |
@@ -256,7 +278,7 @@ need a manual `pos` fallback. (Optional periodic all-flash re-anchors long runs.
 | Protocol foundation, Half 2 — MAC→(x,y) layout table broadcast + NVS cache (`assign`/`table`/`forget`) | ✅ done, hardware-verified |
 | Control plane — structured machine Pi↔conductor serial (bulk table/show-program) | 📐 planned (with the Pi UI) |
 | Auto-calibration — register / roster / blink + laptop CV | 📐 planned |
-| 3 — power management (modem-sleep, dusk deep-sleep, LDR/battery ADC) | 📐 planned |
+| 3 — power management (radio duty-cycle, dusk deep-sleep, LDR/battery ADC) | 🛠 in progress — Lever 1 Stage A (performer radio duty-cycle) ✅ done + host-tested + hardware-verified (0% missed windows steady-state; power-draw number still to be metered); Stage B + Lever 2 planned |
 | 4 — battery power + ET900 draw measurement (go/no-go) | 📐 planned |
 | 5 — OTA + enclosure | 📐 planned |
 

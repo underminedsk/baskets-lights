@@ -80,6 +80,28 @@ static constexpr int64_t REGISTER_INTERVAL_US = 10000000;  // 10s
 // survives on its NVS cache.
 static constexpr int64_t TABLE_INTERVAL_US = 5000000;  // 5s
 
+// ---- Performer radio duty-cycle (Milestone 3, Lever 1, Stage A) --------------
+// A performer free-runs f(x,y,t) from the synced clock, so it does not need the
+// radio on continuously — only periodic beacons for drift correction and recipe/
+// table updates. So power the radio down between brief listen windows: this is the
+// main attack on the RX-dominated night draw (modem-sleep can't help
+// connectionless ESP-NOW — no AP/DTIM, so RX otherwise stays on). The conductor is
+// exempt (it must beacon at 4 Hz and is typically wall-powered); the duty-cycle is
+// gated on role == performer in src/main.cpp. The schedule logic is the
+// dependency-free, host-tested include/powersave.h. Toggle live (and per-board,
+// persisted to NVS key "ps") with the `powersave on|off` serial command.
+#ifndef POWERSAVE_DEFAULT
+#define POWERSAVE_DEFAULT 1  // performers duty-cycle by default; 0 = radio always on
+#endif
+// Radio OFF this long between windows, then ON for a window. At BEACON_INTERVAL_US
+// = 250 ms (4 Hz), a 600 ms window spans ~2 beacons, so one is caught even with
+// wake latency + jitter. ~600 ms ON / 4 s OFF ≈ 13% radio duty. Drift over a 4 s
+// free-run on a ~tens-of-ppm crystal is sub-millisecond — invisible in the slow
+// patterns. A recipe/position change now lands up to one OFF interval late, which
+// is acceptable for the installation (noted in HANDOFF).
+static constexpr int64_t DUTY_OFF_US    = 4000000;  // 4s radio off between listens
+static constexpr int64_t DUTY_LISTEN_US = 600000;   // 600ms listen window
+
 // ---- Diagnostics -------------------------------------------------------------
 // How often each node prints a sync status line to serial (microseconds).
 static constexpr int64_t DIAG_INTERVAL_US = 1000000;  // 1s

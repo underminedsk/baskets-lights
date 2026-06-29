@@ -26,6 +26,7 @@
 #include "beacon.h"
 #include "identity.h"
 #include "patterns.h"
+#include "powersave.h"
 #include "roster.h"
 #include "sync.h"
 #include "table.h"
@@ -42,6 +43,14 @@ static Preferences  g_prefs;
 static NodeIdentity g_id   = {0, 0.0f, 0.0f};
 static uint8_t      g_role = DEFAULT_ROLE;
 static uint8_t      g_mac[6] = {0};  // this node's WiFi STA MAC — stable identity
+
+// Performer radio duty-cycle (powersave.h logic, host-tested). g_radio_on tracks
+// the actual radio power state so loop() never transmits while the radio is down;
+// g_powersave is the runtime/NVS toggle (conductor ignores it — it must beacon).
+static bool         g_powersave = (POWERSAVE_DEFAULT != 0);
+static bool         g_radio_on  = true;  // radio is powered after radioBegin()
+static DutyCycle    g_duty;
+static const DutyConfig DUTY_CFG = {DUTY_OFF_US, DUTY_LISTEN_US};
 
 // Conductor's authoritative layout table (table.h logic, host-tested). Declared
 // here so the NVS load/save below can reach it; edited only over serial on the
@@ -64,6 +73,13 @@ static void configLoad() {
   g_id.x = g_prefs.getFloat("x", 0.0f);
   g_id.y = g_prefs.getFloat("y", 0.0f);
   g_role = g_prefs.getUChar("role", DEFAULT_ROLE);
+  g_powersave = g_prefs.getBool("ps", POWERSAVE_DEFAULT != 0);
+  g_prefs.end();
+}
+
+static void powersaveSave() {
+  g_prefs.begin("node", /*readonly*/ false);
+  g_prefs.putBool("ps", g_powersave);
   g_prefs.end();
 }
 
@@ -151,6 +167,11 @@ static inline int64_t now_us() { return esp_timer_get_time(); }
 static void patternConfigLoad() {
   g_prefs.begin("node", /*readonly*/ true);
   g_beacon.pattern_id = g_prefs.getUShort("pat", patterns::SWEEP);
+  // SOLID (full-white worst case) is a live-only bench pattern, never a show. A
+  // node must not power up rendering it — that would drain the battery on all four
+  // channels — so a persisted SOLID falls back to a safe pattern at boot. `pattern
+  // 3` still works live for a deliberate on-bench measurement.
+  if (g_beacon.pattern_id == patterns::SOLID) g_beacon.pattern_id = patterns::SWEEP;
   g_beacon.brightness = g_prefs.getUChar("bri", 48);
   if (g_beacon.brightness > MAX_BRIGHTNESS) g_beacon.brightness = MAX_BRIGHTNESS;
   g_beacon.params[0] = g_prefs.getUShort("p0", 0);
@@ -239,11 +260,13 @@ void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
 }
 
 // ---- Radio setup -------------------------------------------------------------
-static void radioBegin() {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();  // we never join an AP; just need the STA interface up
-
-  // Pin the channel explicitly so every node agrees without scanning.
+// Pin the channel, set modem-sleep, init ESP-NOW, add the broadcast peer, and
+// register the recv callback. Shared by the initial bring-up and every duty-cycle
+// wake — esp_wifi_stop()/start() tears the peer table down, so it must be rebuilt
+// on each wake (recv-cb registration is re-applied here too, to be safe).
+static void espnowStart() {
+  // Pin the channel explicitly so every node agrees without scanning. The channel
+  // can reset across an esp_wifi_start(), so (re)set it here on every bring-up.
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
@@ -264,6 +287,33 @@ static void radioBegin() {
   esp_now_add_peer(&peer);
 
   esp_now_register_recv_cb(onRecv);  // every node; dispatches on message type
+}
+
+static void radioBegin() {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();  // we never join an AP; just need the STA interface up
+  espnowStart();
+  g_radio_on = true;
+}
+
+// Power the radio DOWN between listen windows (performer duty-cycle). Tears down
+// ESP-NOW, then stops the WiFi driver so the PHY/RX actually powers off — this is
+// the draw we're cutting. Rendering keeps running from the synced clock meanwhile.
+static void radioSleep() {
+  esp_now_deinit();
+  esp_wifi_stop();
+  g_radio_on = false;
+}
+
+// Power the radio back UP for a listen window. esp_wifi_stop() dropped the peer
+// table, so espnowStart() re-adds the broadcast peer and recv callback; the
+// learned conductor unicast peer is gone too, so flag it for re-add on the next
+// register.
+static void radioWake() {
+  esp_wifi_start();
+  espnowStart();
+  g_conductor_peer_added = false;
+  g_radio_on = true;
 }
 
 static uint32_t g_tx_seq = 0;
@@ -376,6 +426,13 @@ static void printDiag() {
       stale ? "FREE-RUN" : "LOCKED  ", (long long)s.offset_us,
       (long long)(age < 0 ? -1 : age / 1000), (unsigned long)s.beacons_rx,
       (unsigned long)s.seq_gaps, (unsigned long)s.last_seq);
+  if (g_powersave) {
+    // windows/missed_windows tell whether the listen window is reliably catching a
+    // beacon — the main risk of the duty-cycle (HANDOFF gotcha #1).
+    Serial.printf("  [duty] radio=%s  windows=%lu  missed=%lu\n",
+                  g_radio_on ? "ON " : "off", (unsigned long)g_duty.windows,
+                  (unsigned long)g_duty.missed_windows);
+  }
 }
 
 // ---- Serial command interface ------------------------------------------------
@@ -388,11 +445,16 @@ static void printDiag() {
 //   role <conductor|performer>   set this node's role and save to NVS
 //   id <n>               set this node's id and save to NVS
 //   pos <x> <y>          set this node's own (x,y) coordinate and save to NVS
+//   powersave <on|off>   (performer) radio duty-cycle on/off; saved to NVS ("ps").
+//                        Toggle it to A/B the night draw on the power meter.
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
 //   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep,
-//                        3 = solid full-white (worst-case draw, for measuring)
+//                        3 = solid full-white (worst-case draw, for measuring),
+//                        4 = glow (steady solid color; params[0]=hue deg,
+//                            params[1]=saturation %)
 //   bri <n>              brightness 0-255
-//   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100
+//   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100;
+//                        glow hue(deg) / saturation(%)
 static void printInfo() {
   char mac[18];
   Serial.printf("role=%s  id=%u  mac=%s  x=%.2f  y=%.2f\n",
@@ -401,6 +463,8 @@ static void printInfo() {
   Serial.printf("  pattern=%u  bri=%u  params=[%u %u %u %u]\n", g_beacon.pattern_id,
                 g_beacon.brightness, g_beacon.params[0], g_beacon.params[1],
                 g_beacon.params[2], g_beacon.params[3]);
+  Serial.printf("  powersave=%s%s\n", g_powersave ? "on" : "off",
+                isConductor() ? " (conductor: radio always on)" : "");
 }
 
 // Conductor-only: print the roster of nodes that have registered. Snapshots the
@@ -487,6 +551,9 @@ static void handleCommand(char* line) {
       else if (!strcmp(a, "performer") || !strcmp(a, "0")) g_role = ROLE_PERFORMER;
       else { Serial.println("? role conductor|performer"); return; }
       roleSave();
+      // A conductor must always have the radio up to beacon; if this board was a
+      // performer that duty-cycled the radio off, power it back on now.
+      if (isConductor() && !g_radio_on) radioWake();
       printInfo();
     }
   } else if (!strcmp(cmd, "id")) {
@@ -519,6 +586,21 @@ static void handleCommand(char* line) {
         patternConfigSave();
         printInfo();
       }
+    }
+  } else if (!strcmp(cmd, "powersave") || !strcmp(cmd, "ps")) {
+    char* a = strtok(nullptr, " \t");
+    if (a && (!strcmp(a, "on") || !strcmp(a, "1"))) {
+      g_powersave = true;
+      dutyInit(g_duty, DUTY_CFG, now_us());  // restart from a fresh listen window
+      powersaveSave();
+      printInfo();
+    } else if (a && (!strcmp(a, "off") || !strcmp(a, "0"))) {
+      g_powersave = false;
+      if (!g_radio_on) radioWake();  // leave the radio powered when disabling
+      powersaveSave();
+      printInfo();
+    } else {
+      Serial.println("? powersave on|off");
     }
   } else {
     Serial.printf("? unknown command: %s\n", cmd);
@@ -565,6 +647,7 @@ void setup() {
   strip.Show();  // clear
 
   radioBegin();
+  dutyInit(g_duty, DUTY_CFG, now_us());  // performer radio duty-cycle (no-op for conductor)
 }
 
 void loop() {
@@ -584,8 +667,15 @@ void loop() {
       next_table = t + TABLE_INTERVAL_US;
     }
   } else {
-    maybeRegister(t);      // announce ourselves to the conductor periodically
-    maybeAdoptPosition();  // adopt + cache any position the table assigned us
+    // Duty-cycle the radio: off between brief listen windows, rendering the whole
+    // time from the synced clock. dutyStep returns a transition to apply, if any.
+    if (g_powersave) {
+      DutyAction act = dutyStep(g_duty, DUTY_CFG, t);
+      if (act == DUTY_WAKE) radioWake();
+      else if (act == DUTY_SLEEP) radioSleep();
+    }
+    if (g_radio_on) maybeRegister(t);  // TX only when the radio is powered
+    maybeAdoptPosition();  // pure NVS; flush a pending table adoption regardless
   }
 
   // Snapshot sync + beacon together, then render against the right clock.
@@ -595,6 +685,11 @@ void loop() {
   s = g_sync;
   b = g_beacon;
   portEXIT_CRITICAL(&g_sync_mux);
+
+  // Tell the duty-cycle scheduler whenever a fresh beacon landed this loop, so it
+  // knows the listen window caught one (and that we've acquired at least once).
+  static uint32_t last_rx = 0;
+  if (s.beacons_rx != last_rx) { dutyNoteBeacon(g_duty); last_rx = s.beacons_rx; }
 
   // Power safety: hard-clamp the rendered brightness to MAX_BRIGHTNESS on every
   // node, so the per-node draw is bounded no matter what a recipe asks for.

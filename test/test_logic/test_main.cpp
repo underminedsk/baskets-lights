@@ -10,6 +10,7 @@
 
 #include "sync.h"
 #include "pattern_math.h"
+#include "powersave.h"
 #include "roster.h"
 #include "table.h"
 
@@ -425,6 +426,96 @@ void test_heartbeat_handles_negative_synced_time() {
   TEST_ASSERT_TRUE(pmath::heartbeatOn(-1'000'000, half));   // k=-2 (even): on
 }
 
+// ---- GLOW steady-color hues (the warm colors the field will hold) ------------
+// glow() maps params[0] (hue degrees) onto pmath::hsvToRgb. Verify the warm hues
+// we broadcast for the realistic-conservative show render as warm color: red
+// strongest, no blue, green between (orange) rising toward yellow.
+void test_glow_warm_hues_are_warm() {
+  float r, g, b;
+  pmath::hsvToRgb(30.0f / 360.0f, 1.0f, 1.0f, r, g, b);  // orange
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 1.0f, r);   // red full
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, b);   // no blue
+  TEST_ASSERT_TRUE(g > 0.0f && g < r);       // some green => orange
+  float g_orange = g;
+  pmath::hsvToRgb(50.0f / 360.0f, 1.0f, 1.0f, r, g, b);  // amber/yellow
+  TEST_ASSERT_FLOAT_WITHIN(1e-4, 0.0f, b);   // still no blue
+  TEST_ASSERT_TRUE(g > g_orange);            // yellower => more green than orange
+}
+
+// ---- Radio duty-cycle (performer power-save schedule) ------------------------
+
+// A small config used throughout: 4s off, 600ms listen window.
+static const DutyConfig DUTY = {4'000'000, 600'000};
+
+void test_duty_starts_on_listening() {
+  DutyCycle d;
+  dutyInit(d, DUTY, 0);
+  TEST_ASSERT_TRUE(d.radio_on);
+  TEST_ASSERT_FALSE(d.ever_caught);
+  // No transition before the first window elapses.
+  TEST_ASSERT_EQUAL(DUTY_NONE, dutyStep(d, DUTY, 100'000));
+}
+
+// Cold boot: until the very first beacon is caught, the window is extended rather
+// than slept through — a fresh node keeps listening until it locks.
+void test_duty_extends_window_until_first_catch() {
+  DutyCycle d;
+  dutyInit(d, DUTY, 0);
+  // Window (600ms) elapses with nothing caught: stay ON, do not sleep.
+  TEST_ASSERT_EQUAL(DUTY_NONE, dutyStep(d, DUTY, 600'000));
+  TEST_ASSERT_TRUE(d.radio_on);
+  TEST_ASSERT_EQUAL(DUTY_NONE, dutyStep(d, DUTY, 1'200'000));
+  TEST_ASSERT_TRUE(d.radio_on);
+  TEST_ASSERT_EQUAL_UINT32(0, d.windows);  // acquisition windows aren't counted
+}
+
+// Once acquired, a completed window sleeps the radio for off_us, then wakes.
+void test_duty_sleeps_after_catch_then_wakes() {
+  DutyCycle d;
+  dutyInit(d, DUTY, 0);
+  dutyNoteBeacon(d);  // caught a beacon during the first window
+  TEST_ASSERT_TRUE(d.ever_caught);
+  // Window completes -> sleep.
+  TEST_ASSERT_EQUAL(DUTY_SLEEP, dutyStep(d, DUTY, 600'000));
+  TEST_ASSERT_FALSE(d.radio_on);
+  TEST_ASSERT_EQUAL_UINT32(1, d.windows);
+  TEST_ASSERT_EQUAL_UINT32(0, d.missed_windows);  // this window caught one
+  // Stays asleep until off_us elapses (600ms window + 4s off = 4.6s).
+  TEST_ASSERT_EQUAL(DUTY_NONE, dutyStep(d, DUTY, 4'000'000));
+  TEST_ASSERT_FALSE(d.radio_on);
+  // Off interval elapsed -> wake for the next listen window.
+  TEST_ASSERT_EQUAL(DUTY_WAKE, dutyStep(d, DUTY, 4'600'000));
+  TEST_ASSERT_TRUE(d.radio_on);
+}
+
+// A conductor going silent mid-show: acquired once, but later windows catch
+// nothing. The node must keep duty-cycling (sleep anyway) and count the misses —
+// it free-runs from the synced clock and re-locks when the conductor returns.
+void test_duty_sleeps_even_when_window_misses_after_acquire() {
+  DutyCycle d;
+  dutyInit(d, DUTY, 0);
+  dutyNoteBeacon(d);
+  TEST_ASSERT_EQUAL(DUTY_SLEEP, dutyStep(d, DUTY, 600'000));   // window 1, caught
+  TEST_ASSERT_EQUAL(DUTY_WAKE,  dutyStep(d, DUTY, 4'600'000)); // wake window 2
+  // No beacon caught this window; it must still sleep (not extend) since acquired.
+  TEST_ASSERT_EQUAL(DUTY_SLEEP, dutyStep(d, DUTY, 5'200'000)); // 4'600'000+600'000
+  TEST_ASSERT_FALSE(d.radio_on);
+  TEST_ASSERT_EQUAL_UINT32(2, d.windows);
+  TEST_ASSERT_EQUAL_UINT32(1, d.missed_windows);  // window 2 missed
+}
+
+// noteBeacon while the radio is off is ignored (we can't catch with radio down).
+void test_duty_note_beacon_ignored_while_off() {
+  DutyCycle d;
+  dutyInit(d, DUTY, 0);
+  dutyNoteBeacon(d);
+  dutyStep(d, DUTY, 600'000);  // -> sleep, radio off
+  TEST_ASSERT_FALSE(d.radio_on);
+  d.caught = false;
+  dutyNoteBeacon(d);           // off: must not mark caught
+  TEST_ASSERT_FALSE(d.caught);
+}
+
 // ---- Runner ------------------------------------------------------------------
 
 int main(int, char**) {
@@ -462,5 +553,11 @@ int main(int, char**) {
   RUN_TEST(test_heartbeat_square_wave);
   RUN_TEST(test_heartbeat_agrees_across_boards_in_sync);
   RUN_TEST(test_heartbeat_handles_negative_synced_time);
+  RUN_TEST(test_glow_warm_hues_are_warm);
+  RUN_TEST(test_duty_starts_on_listening);
+  RUN_TEST(test_duty_extends_window_until_first_catch);
+  RUN_TEST(test_duty_sleeps_after_catch_then_wakes);
+  RUN_TEST(test_duty_sleeps_even_when_window_misses_after_acquire);
+  RUN_TEST(test_duty_note_beacon_ignored_while_off);
   return UNITY_END();
 }
