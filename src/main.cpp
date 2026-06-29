@@ -152,6 +152,7 @@ static void patternConfigLoad() {
   g_prefs.begin("node", /*readonly*/ true);
   g_beacon.pattern_id = g_prefs.getUShort("pat", patterns::SWEEP);
   g_beacon.brightness = g_prefs.getUChar("bri", 48);
+  if (g_beacon.brightness > MAX_BRIGHTNESS) g_beacon.brightness = MAX_BRIGHTNESS;
   g_beacon.params[0] = g_prefs.getUShort("p0", 0);
   g_beacon.params[1] = g_prefs.getUShort("p1", 0);
   g_beacon.params[2] = g_prefs.getUShort("p2", 0);
@@ -388,7 +389,8 @@ static void printDiag() {
 //   id <n>               set this node's id and save to NVS
 //   pos <x> <y>          set this node's own (x,y) coordinate and save to NVS
 // Pattern controls (only the conductor's take effect field-wide; it broadcasts):
-//   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep
+//   pattern <n>          0 = uniform pulse, 1 = rainbow drift, 2 = sweep,
+//                        3 = solid full-white (worst-case draw, for measuring)
 //   bri <n>              brightness 0-255
 //   param <i> <v>        params[i] (i=0..3): sweep period_ms / wavelength*100
 static void printInfo() {
@@ -499,7 +501,14 @@ static void handleCommand(char* line) {
     if (a) { g_beacon.pattern_id = (uint16_t)atoi(a); patternConfigSave(); printInfo(); }
   } else if (!strcmp(cmd, "bri")) {
     char* a = strtok(nullptr, " \t");
-    if (a) { g_beacon.brightness = (uint8_t)atoi(a); patternConfigSave(); printInfo(); }
+    if (a) {
+      int v = atoi(a);
+      if (v < 0) v = 0;
+      if (v > MAX_BRIGHTNESS) v = MAX_BRIGHTNESS;  // never store above the cap
+      g_beacon.brightness = (uint8_t)v;
+      patternConfigSave();
+      printInfo();
+    }
   } else if (!strcmp(cmd, "param")) {
     char* ai = strtok(nullptr, " \t");
     char* av = strtok(nullptr, " \t");
@@ -586,6 +595,10 @@ void loop() {
   s = g_sync;
   b = g_beacon;
   portEXIT_CRITICAL(&g_sync_mux);
+
+  // Power safety: hard-clamp the rendered brightness to MAX_BRIGHTNESS on every
+  // node, so the per-node draw is bounded no matter what a recipe asks for.
+  if (b.brightness > MAX_BRIGHTNESS) b.brightness = MAX_BRIGHTNESS;
 
   // Conductor renders against its own clock; a performer against synced time
   // (which free-runs on the last offset when no beacon arrives).

@@ -14,7 +14,9 @@ namespace patterns {
 enum PatternId : uint16_t {
   PULSE = 0,         // uniform slow breathing pulse (all nodes in unison)
   PALETTE_DRIFT = 1, // smooth rainbow hue cycle (optionally traveling by position)
-  SWEEP = 2          // brightness wave that travels across the field by position
+  SWEEP = 2,         // brightness wave that travels across the field by position
+  SOLID = 3          // every pixel full RGBW at `brightness` — the worst-case
+                     // power draw, for bench-measuring the per-node ceiling
 };
 
 // Uniform breathing pulse in the white channel — every node in unison.
@@ -53,6 +55,14 @@ inline RgbwColor paletteDrift(int64_t synced_us, uint8_t brightness, float x,
                    (uint8_t)lroundf(b * brightness), 0);
 }
 
+// Worst-case power draw: every pixel lit full white on all four RGBW channels at
+// `brightness`. Not a show pattern — it's the bench rig for measuring the per-node
+// LED ceiling (step brightness to trace the draw curve). Any real pattern draws
+// strictly less at the same brightness, so if SOLID fits the budget, all do.
+inline RgbwColor solid(uint8_t brightness) {
+  return RgbwColor(brightness, brightness, brightness, brightness);
+}
+
 // Render one pattern into a NeoPixelBus strip (all pixels share one color for
 // these 16-pixel rings; per-pixel spatial effects can come later).
 template <typename StripT>
@@ -65,6 +75,9 @@ inline void render(StripT& strip, const BeaconMsg& b, int64_t synced_us, float x
       break;
     case PALETTE_DRIFT:
       c = paletteDrift(synced_us, b.brightness, x, b.params);
+      break;
+    case SOLID:
+      c = solid(b.brightness);
       break;
     case PULSE:
     default:

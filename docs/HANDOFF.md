@@ -23,9 +23,12 @@ and pushed; `pio test -e native` (33 pass) and `pio run -e devkitc` build clean.
   on return. Verified: `LOCKED`, stable offset ~±100 µs, `gaps=0`.
 - **Patterns** (`f(x,y,t)`): `PULSE` (uniform breathing), `PALETTE_DRIFT` (smooth
   rainbow hue cycle; `params[0]`=period ms, `params[1]`=spatial hue offset ×100 so
-  the rainbow travels or runs in unison), and `SWEEP` (1-D traveling wave).
-  Conductor broadcasts the recipe (`pattern_id`/`brightness`/`params[4]`);
-  performers render it.
+  the rainbow travels or runs in unison), `SWEEP` (1-D traveling wave), and
+  `SOLID` (`pattern 3`: every pixel full RGBW — the worst-case power draw, for
+  bench-measuring the LED ceiling). Conductor broadcasts the recipe
+  (`pattern_id`/`brightness`/`params[4]`); performers render it. Every node
+  hard-clamps brightness to `MAX_BRIGHTNESS` (config.h, currently 255) so no recipe
+  can exceed the per-node power budget.
 - **NVS identity:** `id` + `(x,y)` persist across reboot; set over serial.
 - **Pattern config persists** too: `pattern_id`/`brightness`/`params` survive a
   power-cycle (keys `pat`/`bri`/`p0`..`p3` in the `"node"` namespace).
@@ -68,18 +71,21 @@ auto-calibration, show program / scheduling, the Pi web UI, power management
   the same USB serial, so port names shuffle on replug — flash by current port.
   Full details in `FLASHING.md`.
 
-**Power — first bench measurement (2026-06-28, ET900 on USB 5V):** a *performer*
-on a DevKit V1, **LED ring connected, gentle pulsing color-wheel pattern**, draws
-**0.17 A = 0.85 W** — the **full per-node draw** (board + radio + LEDs).
-**Budget passes:** 0.85 W × 10 h = 8.5 Wh/night (under the 11 Wh target); 138 Wh ÷
-0.85 W ≈ **~16 nights** at 10 h/night, even on the inefficient DevKit. Caveats:
-(1) confirm 0.17 A as a true average via the ET900 mAh accumulator (LEDs pulse →
-current swings); (2) radio likely dominates — **modem-sleep is ineffective in
-connectionless ESP-NOW** (`WIFI_PS_MIN_MODEM` set, CPU 160 MHz, but no AP/DTIM so
-RX stays on); the real lever is **scheduled light-sleep between beacons** (synced
-clock enables it), a Milestone-3 margin item; (3) **FireBeetle** would draw less;
-(4) **calendar life still needs daytime deep-sleep** — at 24/7 it's ~6.8 days,
-under a 10-night event. Full math in the `power-budget-go-no-go` memory.
+**Power — battery go/no-go MEASURED (2026-06-28): GO (nighttime).** Wired the real
+battery → buck → node chain (12 Ah LiFePO4 at 13.43 V → UCTRONICS 9–36V→5V buck →
+DevKit performer + pulsing ring) and measured the **12V input** current with a DMM
+in series. **Loaded draw ~83 mA → ~1.11 W total, converter included**; buck idle
+(no board) 8.7 mA ≈ 0.12 W; **converter efficiency ~77%** (load = 0.855 W full-hour
+ET900 integral ÷ 1.11 W input; UCTRONICS is fine — keep it). **~11 Wh/night →
+138 Wh ÷ 1.11 W ≈ ~12 nights** at 10 h/night, clears the 10-night target. The
+5V-side ET900 reading was the *load only* (0.855 W); this 12V number is
+authoritative. Caveats: (1) **calendar life still needs
+daytime deep-sleep** — at 24/7 it's ~5 days, under a 10-night event; (2) radio
+likely dominates the draw — **modem-sleep is ineffective in connectionless ESP-NOW**
+(`WIFI_PS_MIN_MODEM` set, CPU 160 MHz, but no AP/DTIM so RX stays on); the real
+lever is **scheduled light-sleep between beacons** (synced clock enables it), the
+Milestone-3 power item; (3) **FireBeetle** would draw less still. Full math in the
+`power-budget-go-no-go` memory.
 
 ## Quick reference
 

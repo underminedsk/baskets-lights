@@ -69,8 +69,15 @@ Conductor broadcasts the recipe in the beacon: `pattern_id`, `brightness`,
     `params[1]` = spatial hue offset (×100 cycles per x unit) so the rainbow can
     travel across the field or run in unison (0). **[done]**
   - `SWEEP` — traveling wave across `x`. **[done]** (1-D today.)
+  - `SOLID` — every pixel full RGBW at `brightness`: the worst-case power draw, a
+    bench rig for measuring the per-node LED ceiling (not a show pattern). **[done]**
   - **[planned]** true 2-D: plane wave at an arbitrary **angle**, **radial ripple**
     from a center point. `params` encode direction/center.
+
+Every node hard-clamps rendered brightness to `MAX_BRIGHTNESS` (config.h), so no
+pattern or recipe can exceed the per-node power budget regardless of what is
+authored. It defaults to 255 (measure the worst case at full scale), then drops to
+the measured power-safe cap. See power management below.
 
 Pure pattern math lives in `include/pattern_math.h` (host-unit-tested); the
 LED-library binding is in `include/patterns.h`.
